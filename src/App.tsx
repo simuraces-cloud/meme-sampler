@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { PadGrid } from './components/PadGrid'
 import { StepSequencer } from './components/StepSequencer'
 import { TransportBar } from './components/TransportBar'
+import { MidiPanel } from './components/MidiPanel'
+import { AudioTrackPanel } from './components/AudioTrackPanel'
 import { useHotkeys } from './hooks/useHotkeys'
 import { ensureAudioStarted } from './audio/engine'
 
@@ -25,23 +27,22 @@ function App() {
   }, [needsStart])
 
   return (
-    <div className="mx-auto flex min-h-full max-w-5xl flex-col gap-5 p-4 sm:p-8">
+    <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-5 p-4 sm:p-8">
       <header className="flex items-end justify-between">
         <div>
           <h1 className="bg-gradient-to-r from-fuchsia-300 via-violet-300 to-cyan-300 bg-clip-text font-display text-3xl font-bold uppercase tracking-tight text-transparent sm:text-4xl">
             Meme Sampler
           </h1>
           <p className="mt-1 text-sm text-white/50">
-            Жми пэды мышкой или клавишами, нарисуй бит, заверни в луп. Перетащи свой звук на пэд — он
-            заменит пресет.
+            Пэды + хоткеи + per-pad FX + MIDI + чопы + AI-драмы + запись и экспорт лупа.
           </p>
         </div>
         <a
-          href="https://github.com/"
+          href="https://github.com/simuraces-cloud/meme-sampler"
           className="hidden text-xs uppercase tracking-widest text-white/30 hover:text-white sm:inline"
           aria-label="GitHub"
         >
-          v0.1 · MVP
+          v0.2 · roadmap
         </a>
       </header>
 
@@ -56,8 +57,12 @@ function App() {
 
       <StepSequencer />
 
+      <MidiPanel />
+
+      <AudioTrackPanel />
+
       <footer className="pb-6 pt-2 text-center font-mono text-[10px] uppercase tracking-widest text-white/30">
-        Space — play/stop · 1234/QWER/ASDF/ZXCV — пэды · drag audio файл на пэд — заменить звук
+        Space — play/stop · 1234/QWER/ASDF/ZXCV — пэды · drag audio на пэд — sample · hover пэд → fx
       </footer>
 
       {needsStart && (
