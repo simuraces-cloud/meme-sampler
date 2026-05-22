@@ -11,20 +11,69 @@ export async function ensureAudioStarted() {
 export const masterLimiter = new Tone.Limiter(-1).toDestination()
 export const masterVolume = new Tone.Volume(-4).connect(masterLimiter)
 
-const reverb = new Tone.Reverb({ decay: 1.4, wet: 0.12 }).connect(masterVolume)
-const drumBus = new Tone.Gain(1).connect(reverb)
-const padBus = new Tone.Gain(1).connect(reverb)
+const reverb = new Tone.Reverb({ decay: 1.4, wet: 1 }).connect(masterVolume)
+const drumBus = new Tone.Gain(1).connect(masterVolume)
+const drumReverbSend = new Tone.Gain(0.12).connect(reverb)
+drumBus.connect(drumReverbSend)
 
 export function getDrumBus() {
   return drumBus
 }
 
-export function getPadBus() {
-  return padBus
+export function getMasterVolume() {
+  return masterVolume
 }
 
 export function setMasterVolumeDb(db: number) {
   masterVolume.volume.rampTo(db, 0.05)
+}
+
+// ---------- Per-pad FX channels ----------
+
+export type PadChannel = {
+  input: Tone.Gain
+  filter: Tone.Filter
+  bitcrusher: Tone.BitCrusher
+  reverbSend: Tone.Gain
+  outDry: Tone.Gain
+}
+
+const padChannels = new Map<number, PadChannel>()
+
+export function getPadChannel(index: number): PadChannel {
+  const cached = padChannels.get(index)
+  if (cached) return cached
+  const input = new Tone.Gain(1)
+  const filter = new Tone.Filter({ frequency: 20000, type: 'lowpass', Q: 0.7 })
+  const bitcrusher = new Tone.BitCrusher(8)
+  bitcrusher.wet.value = 0
+  const outDry = new Tone.Gain(1).connect(masterVolume)
+  const reverbSend = new Tone.Gain(0.12).connect(reverb)
+  input.connect(filter)
+  filter.connect(bitcrusher)
+  bitcrusher.connect(outDry)
+  bitcrusher.connect(reverbSend)
+  const ch: PadChannel = { input, filter, bitcrusher, reverbSend, outDry }
+  padChannels.set(index, ch)
+  return ch
+}
+
+export function setPadFilterFreq(index: number, freq: number) {
+  getPadChannel(index).filter.frequency.rampTo(freq, 0.03)
+}
+
+export function setPadBitcrush(index: number, on: boolean, bits: number) {
+  const ch = getPadChannel(index)
+  if (on) {
+    ch.bitcrusher.bits.value = bits
+    ch.bitcrusher.wet.rampTo(1, 0.03)
+  } else {
+    ch.bitcrusher.wet.rampTo(0, 0.03)
+  }
+}
+
+export function setPadReverbSend(index: number, amount: number) {
+  getPadChannel(index).reverbSend.gain.rampTo(amount, 0.03)
 }
 
 // ---------- Drum machine ----------
@@ -133,3 +182,92 @@ Tone.getTransport().bpm.value = 110
 Tone.getTransport().loop = true
 Tone.getTransport().loopStart = 0
 Tone.getTransport().loopEnd = '1m'
+
+// ---------- Recording / export ----------
+
+// Records the master output to a Blob via MediaRecorder.
+// Plays the transport for `bars` measures then returns the recording.
+export async function recordLoopToBlob(bars = 1): Promise<Blob> {
+  const rawCtx = Tone.getContext().rawContext as AudioContext
+  const dest = rawCtx.createMediaStreamDestination()
+  // Connect master to recorder destination. masterLimiter has `output` of Tone.AudioNode.
+  // Use the raw destination connect by tapping masterVolume's output.
+  // @ts-expect-error access internal output
+  ;(masterVolume.output as AudioNode).connect(dest)
+  const recorder = new MediaRecorder(dest.stream)
+  const chunks: Blob[] = []
+  recorder.ondataavailable = (e) => {
+    if (e.data.size > 0) chunks.push(e.data)
+  }
+  return new Promise<Blob>((resolve, reject) => {
+    recorder.onstop = () => {
+      try {
+        // @ts-expect-error internal output
+        ;(masterVolume.output as AudioNode).disconnect(dest)
+      } catch {
+        /* ignore */
+      }
+      resolve(new Blob(chunks, { type: recorder.mimeType || 'audio/webm' }))
+    }
+    recorder.onerror = (e) => reject(e)
+    ensureSequence()
+    const wasPlaying = Tone.getTransport().state === 'started'
+    if (!wasPlaying) Tone.getTransport().start()
+    recorder.start()
+    const bpm = Tone.getTransport().bpm.value
+    const beatsPerBar = 4
+    const totalBeats = bars * beatsPerBar
+    const durationSec = (60 / bpm) * totalBeats + 0.3 // small tail for reverb
+    setTimeout(() => {
+      recorder.stop()
+      if (!wasPlaying) Tone.getTransport().stop()
+    }, durationSec * 1000)
+  })
+}
+
+// Encode an AudioBuffer to a WAV Blob (16-bit PCM).
+export function audioBufferToWav(buffer: AudioBuffer): Blob {
+  const numCh = buffer.numberOfChannels
+  const sampleRate = buffer.sampleRate
+  const numSamples = buffer.length
+  const dataSize = numSamples * numCh * 2
+  const arrayBuffer = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(arrayBuffer)
+
+  const writeString = (offset: number, str: string) => {
+    for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i))
+  }
+  writeString(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeString(8, 'WAVE')
+  writeString(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true) // PCM
+  view.setUint16(22, numCh, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * numCh * 2, true)
+  view.setUint16(32, numCh * 2, true)
+  view.setUint16(34, 16, true)
+  writeString(36, 'data')
+  view.setUint32(40, dataSize, true)
+
+  let offset = 44
+  const channels: Float32Array[] = []
+  for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c))
+  for (let i = 0; i < numSamples; i++) {
+    for (let c = 0; c < numCh; c++) {
+      let s = Math.max(-1, Math.min(1, channels[c][i]))
+      s = s < 0 ? s * 0x8000 : s * 0x7fff
+      view.setInt16(offset, s, true)
+      offset += 2
+    }
+  }
+  return new Blob([arrayBuffer], { type: 'audio/wav' })
+}
+
+// Decode an audio Blob into an AudioBuffer (re-using current audio context).
+export async function decodeBlobToBuffer(blob: Blob): Promise<AudioBuffer> {
+  const arr = await blob.arrayBuffer()
+  const rawCtx = Tone.getContext().rawContext as AudioContext
+  return await rawCtx.decodeAudioData(arr.slice(0))
+}
